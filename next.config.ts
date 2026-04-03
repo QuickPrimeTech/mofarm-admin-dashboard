@@ -8,6 +8,11 @@ const nextConfig: NextConfig = {
         hostname: "jnsbknjphqyoztefixrk.supabase.co",
         pathname: "/storage/v1/object/public/**",
       },
+      {
+        protocol: "https",
+        hostname: "res.cloudinary.com",
+        pathname: "/**",
+      },
     ],
   },
 };
