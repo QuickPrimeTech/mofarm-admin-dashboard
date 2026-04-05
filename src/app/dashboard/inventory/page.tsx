@@ -1,6 +1,7 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useState } from "react";
+import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
@@ -17,7 +18,6 @@ import {
 import {
   Edit2,
   AlertTriangle,
-  Loader2,
   Package,
   PackageSearch,
   TrendingDown,
@@ -33,6 +33,14 @@ interface Product {
   stock_quantity: number;
   low_stock_threshold: number;
   price: number;
+}
+
+/* ─── Fetcher ────────────────────────────────────────────────── */
+async function fetchProducts(): Promise<Product[]> {
+  const response = await fetch("/api/products");
+  if (!response.ok) throw new Error("Failed to load inventory.");
+  const data = await response.json();
+  return data.products;
 }
 
 /* ─── Summary stat card ──────────────────────────────────────── */
@@ -108,58 +116,80 @@ function StockBadge({ isLow }: { isLow: boolean }) {
 
 /* ─── Page ───────────────────────────────────────────────────── */
 export default function InventoryPage() {
-  const [products, setProducts] = useState<Product[]>([]);
-  const [isLoading, setIsLoading] = useState(true);
+  const queryClient = useQueryClient();
   const [editingProduct, setEditingProduct] = useState<Product | null>(null);
 
-  useEffect(() => {
-    fetchProducts();
-  }, []);
+  // ── Query ──────────────────────────────────────────────────────
+  const {
+    data: products = [],
+    isLoading,
+    isError,
+  } = useQuery({
+    queryKey: ["products"],
+    queryFn: fetchProducts,
+  });
 
-  const fetchProducts = async () => {
-    try {
-      const response = await fetch("/api/products");
-      if (response.ok) {
-        const data = await response.json();
-        setProducts(data.products);
-      } else {
-        toast.error("Failed to load inventory.");
-      }
-    } catch (error) {
-      console.error("Failed to fetch products:", error);
-      toast.error("Failed to load inventory. Please refresh.");
-    } finally {
-      setIsLoading(false);
-    }
-  };
-
-  const handleSave = async (
-    productId: string,
-    values: { stock_quantity: number; low_stock_threshold: number },
-  ) => {
-    try {
+  // ── Mutation ───────────────────────────────────────────────────
+  const updateMutation = useMutation({
+    mutationFn: async ({
+      productId,
+      values,
+    }: {
+      productId: string;
+      values: { stock_quantity: number; low_stock_threshold: number };
+    }) => {
       const response = await fetch(`/api/products/${productId}`, {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(values),
       });
       const data = await response.json();
-      if (!response.ok) {
-        toast.error(data.error || "Failed to update inventory.");
-        return;
-      }
-      const productName = products.find((p) => p.id === productId)?.name;
-      setProducts(
-        products.map((p) => (p.id === productId ? { ...p, ...values } : p)),
+      if (!response.ok)
+        throw new Error(data.error || "Failed to update inventory.");
+      return data as Product;
+    },
+
+    // Optimistically update the cache before the server responds
+    onMutate: async ({ productId, values }) => {
+      await queryClient.cancelQueries({ queryKey: ["products"] });
+      const previous = queryClient.getQueryData<Product[]>(["products"]);
+      queryClient.setQueryData<Product[]>(["products"], (old = []) =>
+        old.map((p) => (p.id === productId ? { ...p, ...values } : p)),
       );
+      return { previous };
+    },
+
+    // Roll back if the server rejects the update
+    onError: (error, _vars, context) => {
+      if (context?.previous) {
+        queryClient.setQueryData(["products"], context.previous);
+      }
+      toast.error(
+        error instanceof Error ? error.message : "Something went wrong.",
+      );
+    },
+
+    onSuccess: (updatedProduct) => {
+      toast.success(`${updatedProduct.name} updated successfully!`);
       setEditingProduct(null);
-      toast.success(`${productName ?? "Product"} updated successfully!`);
-    } catch (error) {
-      console.error("Failed to update inventory:", error);
-      toast.error("Something went wrong. Please try again.");
-    }
+    },
+
+    // Always re-sync with server after mutation settles
+    onSettled: () => {
+      queryClient.invalidateQueries({ queryKey: ["products"] });
+    },
+  });
+
+  const handleSave = async (
+    productId: string,
+    values: { stock_quantity: number; low_stock_threshold: number },
+  ): Promise<void> => {
+    updateMutation.mutate({ productId, values });
   };
 
+  if (isError) toast.error("Failed to load inventory. Please refresh.");
+
+  // ── Derived stats ──────────────────────────────────────────────
   const lowStockProducts = products.filter(
     (p) => p.stock_quantity < p.low_stock_threshold,
   );
@@ -333,6 +363,7 @@ export default function InventoryPage() {
                           variant="ghost"
                           size="sm"
                           onClick={() => setEditingProduct(product)}
+                          disabled={updateMutation.isPending}
                           className="h-8 gap-1.5 text-blue-500 hover:text-blue-700 hover:bg-blue-50 rounded-lg text-xs font-semibold opacity-0 group-hover:opacity-100 transition-opacity"
                         >
                           <Edit2 className="h-3.5 w-3.5" />

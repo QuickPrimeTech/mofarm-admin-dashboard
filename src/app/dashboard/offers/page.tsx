@@ -1,6 +1,7 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useState } from "react";
+import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -64,14 +65,7 @@ interface Offer {
   active: boolean;
 }
 
-const EMPTY_CREATE = {
-  product_id: "",
-  discount_percentage: "",
-  valid_from: "",
-  valid_to: "",
-};
-
-const EMPTY_EDIT = {
+const EMPTY_FORM = {
   product_id: "",
   discount_percentage: "",
   valid_from: "",
@@ -79,7 +73,20 @@ const EMPTY_EDIT = {
   active: true,
 };
 
-// ── Stat card ─────────────────────────────────────────────────────────────────
+/* ─── Fetchers ───────────────────────────────────────────────── */
+async function fetchOffers(): Promise<Offer[]> {
+  const res = await fetch("/api/offers");
+  if (!res.ok) throw new Error("Failed to load offers.");
+  return (await res.json()).offers ?? [];
+}
+
+async function fetchProducts(): Promise<Product[]> {
+  const res = await fetch("/api/products");
+  if (!res.ok) throw new Error("Failed to load products.");
+  return (await res.json()).products ?? [];
+}
+
+/* ─── Stat card ──────────────────────────────────────────────── */
 function StatCard({
   title,
   value,
@@ -113,7 +120,7 @@ function StatCard({
   );
 }
 
-// ── Offer form (shared for create + edit) ────────────────────────────────────
+/* ─── Offer form ─────────────────────────────────────────────── */
 function OfferForm({
   title,
   form,
@@ -127,8 +134,8 @@ function OfferForm({
   accentClass,
 }: {
   title: string;
-  form: typeof EMPTY_EDIT;
-  setForm: (f: typeof EMPTY_EDIT) => void;
+  form: typeof EMPTY_FORM;
+  setForm: (f: typeof EMPTY_FORM) => void;
   products: Product[];
   isSubmitting: boolean;
   showActive: boolean;
@@ -143,7 +150,6 @@ function OfferForm({
         <DialogTitle className="text-lg font-semibold">{title}</DialogTitle>
       </DialogHeader>
       <form onSubmit={onSubmit} className="space-y-4 pt-2">
-        {/* Product */}
         <div className="space-y-1.5">
           <Label>Product *</Label>
           <Select
@@ -165,7 +171,6 @@ function OfferForm({
           </Select>
         </div>
 
-        {/* Discount */}
         <div className="space-y-1.5">
           <Label>Discount % *</Label>
           <div className="relative">
@@ -190,7 +195,6 @@ function OfferForm({
           </div>
         </div>
 
-        {/* Dates */}
         <div className="grid grid-cols-2 gap-3">
           <div className="space-y-1.5">
             <Label>Valid From *</Label>
@@ -214,7 +218,6 @@ function OfferForm({
           </div>
         </div>
 
-        {/* Active toggle — only in edit mode */}
         {showActive && (
           <div className="flex items-center gap-3 rounded-lg border border-gray-200 bg-gray-50 px-4 py-3">
             <Switch
@@ -236,7 +239,6 @@ function OfferForm({
           </div>
         )}
 
-        {/* Actions */}
         <div className="flex gap-3 pt-2">
           <Button
             type="button"
@@ -267,69 +269,141 @@ function OfferForm({
   );
 }
 
-// ── Main Page ─────────────────────────────────────────────────────────────────
+/* ─── Page ───────────────────────────────────────────────────── */
 export default function OffersPage() {
-  const [offers, setOffers] = useState<Offer[]>([]);
-  const [products, setProducts] = useState<Product[]>([]);
-  const [isLoading, setIsLoading] = useState(true);
-  const [isSubmitting, setIsSubmitting] = useState(false);
-
+  const queryClient = useQueryClient();
   const [showCreateDialog, setShowCreateDialog] = useState(false);
   const [editingOffer, setEditingOffer] = useState<Offer | null>(null);
+  const [createForm, setCreateForm] = useState(EMPTY_FORM);
+  const [editForm, setEditForm] = useState(EMPTY_FORM);
 
-  const [createForm, setCreateForm] = useState(EMPTY_EDIT);
-  const [editForm, setEditForm] = useState(EMPTY_EDIT);
+  /* ── Queries ─────────────────────────────────────────────────── */
+  const { data: offers = [], isLoading: offersLoading } = useQuery({
+    queryKey: ["offers"],
+    queryFn: fetchOffers,
+  });
 
-  useEffect(() => {
-    fetchOffersAndProducts();
-  }, []);
+  const { data: products = [], isLoading: productsLoading } = useQuery({
+    queryKey: ["products"],
+    queryFn: fetchProducts,
+  });
 
-  const fetchOffersAndProducts = async () => {
-    try {
-      const [offersRes, productsRes] = await Promise.all([
-        fetch("/api/offers"),
-        fetch("/api/products"),
-      ]);
-      if (offersRes.ok) setOffers((await offersRes.json()).offers || []);
-      if (productsRes.ok)
-        setProducts((await productsRes.json()).products || []);
-    } catch {
-      toast.error("Failed to load offers. Please refresh.");
-    } finally {
-      setIsLoading(false);
-    }
-  };
+  const isLoading = offersLoading || productsLoading;
 
-  // CREATE
-  const handleAddOffer = async (e: React.FormEvent) => {
-    e.preventDefault();
-    setIsSubmitting(true);
-    try {
+  /* ── Create mutation ─────────────────────────────────────────── */
+  const createMutation = useMutation({
+    mutationFn: async (form: typeof EMPTY_FORM) => {
       const res = await fetch("/api/offers", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          ...createForm,
-          discount_percentage: parseFloat(createForm.discount_percentage),
+          ...form,
+          discount_percentage: parseFloat(form.discount_percentage),
         }),
       });
       const data = await res.json();
-      if (!res.ok) {
-        toast.error(data.error || "Failed to create offer.");
-        return;
-      }
-      setOffers([data, ...offers]);
-      setCreateForm(EMPTY_EDIT);
+      if (!res.ok) throw new Error(data.error || "Failed to create offer.");
+      return data as Offer;
+    },
+    onSuccess: (newOffer) => {
+      queryClient.setQueryData<Offer[]>(["offers"], (old = []) => [
+        newOffer,
+        ...old,
+      ]);
+      setCreateForm(EMPTY_FORM);
       setShowCreateDialog(false);
       toast.success("Offer created successfully!");
-    } catch {
-      toast.error("Something went wrong. Please try again.");
-    } finally {
-      setIsSubmitting(false);
-    }
+    },
+    onError: (error) => {
+      toast.error(
+        error instanceof Error ? error.message : "Something went wrong.",
+      );
+    },
+    onSettled: () => {
+      queryClient.invalidateQueries({ queryKey: ["offers"] });
+    },
+  });
+
+  /* ── Update mutation ─────────────────────────────────────────── */
+  const updateMutation = useMutation({
+    mutationFn: async ({
+      id,
+      body,
+    }: {
+      id: string;
+      body: Partial<Offer> & { discount_percentage?: number | string };
+    }) => {
+      const res = await fetch(`/api/offers/${id}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || "Failed to update offer.");
+      return data as Offer;
+    },
+    onMutate: async ({ id, body }) => {
+      await queryClient.cancelQueries({ queryKey: ["offers"] });
+      const previous = queryClient.getQueryData<Offer[]>(["offers"]);
+      queryClient.setQueryData<Offer[]>(["offers"], (old = []) =>
+        old.map((o) => (o.id === id ? { ...o, ...body } : o)),
+      );
+      return { previous };
+    },
+    onError: (error, _vars, context) => {
+      if (context?.previous)
+        queryClient.setQueryData(["offers"], context.previous);
+      toast.error(
+        error instanceof Error ? error.message : "Something went wrong.",
+      );
+    },
+    onSuccess: (updatedOffer) => {
+      queryClient.setQueryData<Offer[]>(["offers"], (old = []) =>
+        old.map((o) => (o.id === updatedOffer.id ? updatedOffer : o)),
+      );
+    },
+    onSettled: () => {
+      queryClient.invalidateQueries({ queryKey: ["offers"] });
+    },
+  });
+
+  /* ── Delete mutation ─────────────────────────────────────────── */
+  const deleteMutation = useMutation({
+    mutationFn: async (offerId: string) => {
+      const res = await fetch(`/api/offers/${offerId}`, { method: "DELETE" });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || "Failed to delete offer.");
+      return offerId;
+    },
+    onMutate: async (offerId) => {
+      await queryClient.cancelQueries({ queryKey: ["offers"] });
+      const previous = queryClient.getQueryData<Offer[]>(["offers"]);
+      queryClient.setQueryData<Offer[]>(["offers"], (old = []) =>
+        old.filter((o) => o.id !== offerId),
+      );
+      return { previous };
+    },
+    onError: (error, _vars, context) => {
+      if (context?.previous)
+        queryClient.setQueryData(["offers"], context.previous);
+      toast.error(
+        error instanceof Error ? error.message : "Something went wrong.",
+      );
+    },
+    onSuccess: () => {
+      toast.success("Offer deleted successfully.");
+    },
+    onSettled: () => {
+      queryClient.invalidateQueries({ queryKey: ["offers"] });
+    },
+  });
+
+  /* ── Handlers ────────────────────────────────────────────────── */
+  const handleAddOffer = (e: React.FormEvent) => {
+    e.preventDefault();
+    createMutation.mutate(createForm);
   };
 
-  // EDIT click
   const handleEditClick = (offer: Offer) => {
     setEditingOffer(offer);
     setEditForm({
@@ -341,77 +415,45 @@ export default function OffersPage() {
     });
   };
 
-  // UPDATE
-  const handleUpdateOffer = async (e: React.FormEvent) => {
+  const handleUpdateOffer = (e: React.FormEvent) => {
     e.preventDefault();
     if (!editingOffer) return;
-    setIsSubmitting(true);
-    try {
-      const res = await fetch(`/api/offers/${editingOffer.id}`, {
-        method: "PATCH",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
+    updateMutation.mutate(
+      {
+        id: editingOffer.id,
+        body: {
           ...editForm,
           discount_percentage: parseFloat(editForm.discount_percentage),
-        }),
-      });
-      const data = await res.json();
-      if (!res.ok) {
-        toast.error(data.error || "Failed to update offer.");
-        return;
-      }
-      setOffers(offers.map((o) => (o.id === data.id ? data : o)));
-      setEditingOffer(null);
-      toast.success("Offer updated successfully!");
-    } catch {
-      toast.error("Something went wrong. Please try again.");
-    } finally {
-      setIsSubmitting(false);
-    }
+        },
+      },
+      {
+        onSuccess: () => {
+          setEditingOffer(null);
+          toast.success("Offer updated successfully!");
+        },
+      },
+    );
   };
 
-  // TOGGLE
-  const handleToggleActive = async (
-    offerId: string,
-    currentActive: boolean,
-  ) => {
-    try {
-      const res = await fetch(`/api/offers/${offerId}`, {
-        method: "PATCH",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ active: !currentActive }),
-      });
-      const data = await res.json();
-      if (!res.ok) {
-        toast.error(data.error || "Failed to toggle offer.");
-        return;
-      }
-      setOffers(offers.map((o) => (o.id === offerId ? data : o)));
-      toast.success(
-        `Offer marked as ${!currentActive ? "active" : "inactive"}.`,
-      );
-    } catch {
-      toast.error("Something went wrong. Please try again.");
-    }
+  const handleToggleActive = (offerId: string, currentActive: boolean) => {
+    updateMutation.mutate(
+      { id: offerId, body: { active: !currentActive } },
+      {
+        onSuccess: () => {
+          toast.success(
+            `Offer marked as ${!currentActive ? "active" : "inactive"}.`,
+          );
+        },
+      },
+    );
   };
 
-  // DELETE
-  const handleDeleteOffer = async (offerId: string) => {
+  const handleDeleteOffer = (offerId: string) => {
     if (!confirm("Are you sure you want to delete this offer?")) return;
-    try {
-      const res = await fetch(`/api/offers/${offerId}`, { method: "DELETE" });
-      const data = await res.json();
-      if (!res.ok) {
-        toast.error(data.error || "Failed to delete offer.");
-        return;
-      }
-      setOffers(offers.filter((o) => o.id !== offerId));
-      toast.success("Offer deleted successfully.");
-    } catch {
-      toast.error("Something went wrong. Please try again.");
-    }
+    deleteMutation.mutate(offerId);
   };
 
+  /* ── Derived stats ───────────────────────────────────────────── */
   const activeOffers = offers.filter((o) => o.active);
   const discountTotal = activeOffers.reduce(
     (sum, o) => sum + o.discount_percentage,
@@ -525,40 +567,42 @@ export default function OffersPage() {
               <Table>
                 <TableHeader>
                   <TableRow className="bg-gray-50/40 hover:bg-gray-50/40">
-                    <TableHead className="px-6 text-xs font-semibold uppercase tracking-wide text-gray-500">
-                      Product
-                    </TableHead>
-                    <TableHead className="px-6 text-xs font-semibold uppercase tracking-wide text-gray-500">
-                      Discount
-                    </TableHead>
-                    <TableHead className="px-6 text-xs font-semibold uppercase tracking-wide text-gray-500">
-                      Valid From
-                    </TableHead>
-                    <TableHead className="px-6 text-xs font-semibold uppercase tracking-wide text-gray-500">
-                      Valid To
-                    </TableHead>
-                    <TableHead className="px-6 text-xs font-semibold uppercase tracking-wide text-gray-500">
-                      Status
-                    </TableHead>
-                    <TableHead className="px-6 text-xs font-semibold uppercase tracking-wide text-gray-500 text-right">
-                      Actions
-                    </TableHead>
+                    {[
+                      "Product",
+                      "Discount",
+                      "Valid From",
+                      "Valid To",
+                      "Status",
+                      "",
+                    ].map((h) => (
+                      <TableHead
+                        key={h}
+                        className={`px-6 text-xs font-semibold uppercase tracking-wide text-gray-500 ${h === "" ? "text-right" : ""}`}
+                      >
+                        {h}
+                      </TableHead>
+                    ))}
                   </TableRow>
                 </TableHeader>
                 <TableBody>
                   {offers.map((offer) => {
                     const isExpired = new Date(offer.valid_to) < new Date();
+                    const isToggling =
+                      updateMutation.isPending &&
+                      updateMutation.variables?.id === offer.id;
+                    const isDeleting =
+                      deleteMutation.isPending &&
+                      deleteMutation.variables === offer.id;
+
                     return (
                       <TableRow
                         key={offer.id}
                         className="hover:bg-gray-50/60 transition-colors group"
                       >
-                        {/* Product */}
                         <TableCell className="px-6 py-4 font-medium text-gray-900">
-                          {offer.product?.name || "Unknown Product"}
+                          {offer.product?.name ?? "Unknown Product"}
                         </TableCell>
 
-                        {/* Discount */}
                         <TableCell className="px-6 py-4">
                           <Badge
                             variant="outline"
@@ -568,19 +612,13 @@ export default function OffersPage() {
                           </Badge>
                         </TableCell>
 
-                        {/* Valid From */}
                         <TableCell className="px-6 py-4 text-sm text-gray-600">
                           {new Date(offer.valid_from).toLocaleDateString(
                             "en-KE",
-                            {
-                              day: "numeric",
-                              month: "short",
-                              year: "numeric",
-                            },
+                            { day: "numeric", month: "short", year: "numeric" },
                           )}
                         </TableCell>
 
-                        {/* Valid To */}
                         <TableCell className="px-6 py-4 text-sm text-gray-600">
                           <span className={isExpired ? "text-red-500" : ""}>
                             {new Date(offer.valid_to).toLocaleDateString(
@@ -602,7 +640,6 @@ export default function OffersPage() {
                           )}
                         </TableCell>
 
-                        {/* Status */}
                         <TableCell className="px-6 py-4">
                           <Badge
                             variant="outline"
@@ -616,10 +653,8 @@ export default function OffersPage() {
                           </Badge>
                         </TableCell>
 
-                        {/* Actions */}
                         <TableCell className="px-6 py-4 text-right">
                           <div className="flex items-center justify-end gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
-                            {/* Toggle */}
                             <Tooltip>
                               <TooltipTrigger asChild>
                                 <Button
@@ -628,9 +663,15 @@ export default function OffersPage() {
                                   onClick={() =>
                                     handleToggleActive(offer.id, offer.active)
                                   }
+                                  disabled={isToggling}
                                   className={`h-8 w-8 ${offer.active ? "text-green-600 hover:bg-green-50" : "text-gray-400 hover:text-gray-600 hover:bg-gray-100"}`}
                                 >
-                                  {offer.active ? (
+                                  {isToggling ? (
+                                    <Loader2
+                                      size={14}
+                                      className="animate-spin"
+                                    />
+                                  ) : offer.active ? (
                                     <ToggleRight size={16} />
                                   ) : (
                                     <ToggleLeft size={16} />
@@ -642,7 +683,6 @@ export default function OffersPage() {
                               </TooltipContent>
                             </Tooltip>
 
-                            {/* Edit */}
                             <Tooltip>
                               <TooltipTrigger asChild>
                                 <Button
@@ -657,16 +697,23 @@ export default function OffersPage() {
                               <TooltipContent>Edit</TooltipContent>
                             </Tooltip>
 
-                            {/* Delete */}
                             <Tooltip>
                               <TooltipTrigger asChild>
                                 <Button
                                   variant="ghost"
                                   size="icon"
                                   onClick={() => handleDeleteOffer(offer.id)}
+                                  disabled={isDeleting}
                                   className="h-8 w-8 text-gray-400 hover:text-red-600 hover:bg-red-50"
                                 >
-                                  <Trash2 size={14} />
+                                  {isDeleting ? (
+                                    <Loader2
+                                      size={14}
+                                      className="animate-spin"
+                                    />
+                                  ) : (
+                                    <Trash2 size={14} />
+                                  )}
                                 </Button>
                               </TooltipTrigger>
                               <TooltipContent>Delete</TooltipContent>
@@ -689,7 +736,7 @@ export default function OffersPage() {
             form={createForm}
             setForm={setCreateForm}
             products={products}
-            isSubmitting={isSubmitting}
+            isSubmitting={createMutation.isPending}
             showActive={false}
             onSubmit={handleAddOffer}
             onCancel={() => setShowCreateDialog(false)}
@@ -708,7 +755,7 @@ export default function OffersPage() {
             form={editForm}
             setForm={setEditForm}
             products={products}
-            isSubmitting={isSubmitting}
+            isSubmitting={updateMutation.isPending}
             showActive={true}
             onSubmit={handleUpdateOffer}
             onCancel={() => setEditingOffer(null)}

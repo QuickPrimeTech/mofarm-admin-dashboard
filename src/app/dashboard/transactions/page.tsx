@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
+import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
@@ -47,6 +48,39 @@ interface Transaction {
   status: string;
   mpesa_request_id?: string;
   created_at: string;
+}
+
+// ── Query Keys ────────────────────────────────────────────────────────────────
+export const queryKeys = {
+  transactions: (status: string) => ["transactions", status] as const,
+};
+
+// ── Fetchers / API ────────────────────────────────────────────────────────────
+async function fetchTransactions(status: string): Promise<Transaction[]> {
+  const res = await fetch(`/api/transactions?status=${status}`);
+  if (!res.ok) throw new Error("Failed to load transactions.");
+  const data = await res.json();
+  return data.transactions ?? [];
+}
+
+async function updateTransactionStatus(
+  id: string,
+  status: string,
+): Promise<Transaction> {
+  const res = await fetch(`/api/transactions/${id}`, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ status }),
+  });
+  const data = await res.json();
+  if (!res.ok) throw new Error(data.error || "Failed to update transaction.");
+  return data;
+}
+
+async function deleteTransaction(id: string): Promise<void> {
+  const res = await fetch(`/api/transactions/${id}`, { method: "DELETE" });
+  const data = await res.json();
+  if (!res.ok) throw new Error(data.error || "Failed to delete transaction.");
 }
 
 // ── Status config ─────────────────────────────────────────────────────────────
@@ -120,85 +154,115 @@ function StatCard({
 
 // ── Main Page ─────────────────────────────────────────────────────────────────
 export default function TransactionsPage() {
-  const [transactions, setTransactions] = useState<Transaction[]>([]);
-  const [isLoading, setIsLoading] = useState(true);
+  const queryClient = useQueryClient();
   const [filterStatus, setFilterStatus] = useState("all");
-  const [updatingId, setUpdatingId] = useState<string | null>(null);
+
+  // ── Query ─────────────────────────────────────────────────────────────────
+  const {
+    data: transactions = [],
+    isLoading,
+    isError,
+  } = useQuery({
+    queryKey: queryKeys.transactions(filterStatus),
+    queryFn: () => fetchTransactions(filterStatus),
+  });
 
   useEffect(() => {
-    fetchTransactions();
-  }, [filterStatus]);
+    if (isError) toast.error("Failed to load transactions. Please refresh.");
+  }, [isError]);
 
-  const fetchTransactions = async () => {
-    setIsLoading(true);
-    try {
-      const response = await fetch(`/api/transactions?status=${filterStatus}`);
-      if (response.ok) {
-        const data = await response.json();
-        setTransactions(data.transactions ?? []);
-      } else {
-        toast.error("Failed to load transactions.");
-      }
-    } catch (error) {
-      console.error("Failed to fetch transactions:", error);
-      toast.error("Failed to load transactions. Please refresh.");
-    } finally {
-      setIsLoading(false);
-    }
-  };
-
-  const handleStatusChange = async (
-    transactionId: string,
-    newStatus: string,
-  ) => {
-    setUpdatingId(transactionId);
-    try {
-      const response = await fetch(`/api/transactions/${transactionId}`, {
-        method: "PATCH",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ status: newStatus }),
+  // ── Mutations ─────────────────────────────────────────────────────────────
+  const updateStatusMutation = useMutation({
+    mutationFn: ({ id, status }: { id: string; status: string }) =>
+      updateTransactionStatus(id, status),
+    onMutate: async ({ id, status }) => {
+      await queryClient.cancelQueries({
+        queryKey: queryKeys.transactions(filterStatus),
       });
 
-      const data = await response.json();
-
-      if (!response.ok) {
-        toast.error(data.error || "Failed to update transaction.");
-        return;
-      }
-
-      setTransactions(
-        transactions.map((t) =>
-          t.id === transactionId ? { ...t, status: newStatus } : t,
-        ),
+      const previousTransactions = queryClient.getQueryData<Transaction[]>(
+        queryKeys.transactions(filterStatus),
       );
-      toast.success("Transaction status updated.");
-    } catch (error) {
-      console.error("Failed to update transaction:", error);
-      toast.error("Something went wrong. Please try again.");
-    } finally {
-      setUpdatingId(null);
-    }
-  };
 
-  const handleDelete = async (transactionId: string) => {
-    if (!confirm("Are you sure you want to delete this transaction?")) return;
-    try {
-      const response = await fetch(`/api/transactions/${transactionId}`, {
-        method: "DELETE",
-      });
-      const data = await response.json();
-      if (!response.ok) {
-        toast.error(data.error || "Failed to delete transaction.");
-        return;
+      // Optimistically update status in cache
+      queryClient.setQueryData<Transaction[]>(
+        queryKeys.transactions(filterStatus),
+        (old = []) => old.map((t) => (t.id === id ? { ...t, status } : t)),
+      );
+
+      return { previousTransactions };
+    },
+    onError: (err, _vars, context) => {
+      if (context?.previousTransactions) {
+        queryClient.setQueryData(
+          queryKeys.transactions(filterStatus),
+          context.previousTransactions,
+        );
       }
-      setTransactions(transactions.filter((t) => t.id !== transactionId));
+      toast.error(
+        err instanceof Error ? err.message : "Failed to update transaction.",
+      );
+    },
+    onSuccess: () => {
+      toast.success("Transaction status updated.");
+    },
+    onSettled: () => {
+      queryClient.invalidateQueries({
+        queryKey: queryKeys.transactions(filterStatus),
+      });
+    },
+  });
+
+  const deleteMutation = useMutation({
+    mutationFn: deleteTransaction,
+    onMutate: async (id) => {
+      await queryClient.cancelQueries({
+        queryKey: queryKeys.transactions(filterStatus),
+      });
+
+      const previousTransactions = queryClient.getQueryData<Transaction[]>(
+        queryKeys.transactions(filterStatus),
+      );
+
+      queryClient.setQueryData<Transaction[]>(
+        queryKeys.transactions(filterStatus),
+        (old = []) => old.filter((t) => t.id !== id),
+      );
+
+      return { previousTransactions };
+    },
+    onError: (err, _id, context) => {
+      if (context?.previousTransactions) {
+        queryClient.setQueryData(
+          queryKeys.transactions(filterStatus),
+          context.previousTransactions,
+        );
+      }
+      toast.error(
+        err instanceof Error ? err.message : "Failed to delete transaction.",
+      );
+    },
+    onSuccess: () => {
       toast.success("Transaction deleted.");
-    } catch (error) {
-      toast.error("Something went wrong. Please try again.");
-    }
+    },
+    onSettled: () => {
+      queryClient.invalidateQueries({
+        queryKey: queryKeys.transactions(filterStatus),
+      });
+    },
+  });
+
+  // ── Handlers ─────────────────────────────────────────────────────────────
+  const handleStatusChange = (id: string, status: string) => {
+    updateStatusMutation.mutate({ id, status });
   };
 
-  // ── Derived stats ───────────────────────────────────────────────────────────
+  const handleDelete = (id: string) => {
+    if (!confirm("Are you sure you want to delete this transaction?")) return;
+    deleteMutation.mutate(id);
+  };
+
+  // ── Derived stats ─────────────────────────────────────────────────────────
   const totalAmount = transactions.reduce((sum, t) => sum + (t.amount ?? 0), 0);
   const avgAmount =
     transactions.length > 0 ? Math.round(totalAmount / transactions.length) : 0;
@@ -349,7 +413,9 @@ export default function TransactionsPage() {
                     const cfg =
                       STATUS_CONFIG[transaction.status] ??
                       STATUS_CONFIG.pending;
-                    const isUpdating = updatingId === transaction.id;
+                    const isUpdating =
+                      updateStatusMutation.isPending &&
+                      updateStatusMutation.variables?.id === transaction.id;
 
                     return (
                       <TableRow
@@ -380,7 +446,7 @@ export default function TransactionsPage() {
                           </span>
                         </TableCell>
 
-                        {/* Method — safe fallback */}
+                        {/* Method */}
                         <TableCell className="px-6 py-4">
                           <Badge
                             variant="outline"
@@ -461,6 +527,7 @@ export default function TransactionsPage() {
                                   size="icon"
                                   className="h-8 w-8 text-gray-400 hover:text-red-600 hover:bg-red-50"
                                   onClick={() => handleDelete(transaction.id)}
+                                  disabled={deleteMutation.isPending}
                                 >
                                   <Trash2 size={14} />
                                 </Button>

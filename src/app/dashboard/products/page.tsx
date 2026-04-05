@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
+import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import {
   Card,
   CardContent,
@@ -34,6 +35,7 @@ import {
 } from "lucide-react";
 import { createClient } from "@/lib/supabase/client";
 import Image from "next/image";
+import { toast } from "sonner";
 
 interface Product {
   id: string;
@@ -48,6 +50,34 @@ interface Product {
 }
 
 type FormMode = "add" | "edit" | null;
+
+// ── Query Keys ────────────────────────────────────────────────────────────────
+export const queryKeys = {
+  products: ["products"] as const,
+};
+
+// ── Fetcher ───────────────────────────────────────────────────────────────────
+async function fetchProducts(): Promise<Product[]> {
+  const res = await fetch("/api/products");
+  if (!res.ok) throw new Error("Failed to fetch products.");
+  const data = await res.json();
+  return data.products ?? [];
+}
+
+// ── Storage helpers ───────────────────────────────────────────────────────────
+function getStoragePathFromUrl(url: string): string | null {
+  if (!url) return null;
+  try {
+    const urlObj = new URL(url);
+    const pathParts = urlObj.pathname.split("/");
+    const bucketIndex = pathParts.indexOf("product-images");
+    if (bucketIndex !== -1 && pathParts[bucketIndex + 1])
+      return pathParts.slice(bucketIndex + 1).join("/");
+    return null;
+  } catch {
+    return null;
+  }
+}
 
 /* ─── Label helper ───────────────────────────────────────────── */
 function FieldLabel({
@@ -103,11 +133,11 @@ function TableSkeleton() {
 /* ─── Main Page ──────────────────────────────────────────────── */
 export default function ProductsPage() {
   const supabase = createClient();
+  const queryClient = useQueryClient();
+
   const [imageFile, setImageFile] = useState<File | null>(null);
-  const [products, setProducts] = useState<Product[]>([]);
-  const [isLoading, setIsLoading] = useState(true);
   const [formMode, setFormMode] = useState<FormMode>(null);
-  const [editingProductId, setEditingProductId] = useState<string | null>(null);
+  const [editingProduct, setEditingProduct] = useState<Product | null>(null);
   const [removeImage, setRemoveImage] = useState(false);
 
   const [productForm, setProductForm] = useState({
@@ -120,123 +150,95 @@ export default function ProductsPage() {
     image_url: "",
   });
 
+  // ── Query ─────────────────────────────────────────────────────────────────
+  const {
+    data: products = [],
+    isLoading,
+    isError,
+  } = useQuery({
+    queryKey: queryKeys.products,
+    queryFn: fetchProducts,
+  });
+
   useEffect(() => {
-    fetchProducts();
-  }, []);
+    if (isError) console.error("Failed to fetch products.");
+  }, [isError]);
 
-  const fetchProducts = async () => {
-    try {
-      const response = await fetch("/api/products");
-      if (response.ok) {
-        const data = await response.json();
-        setProducts(data.products);
-      }
-    } catch (error) {
-      console.error("Failed to fetch products:", error);
-    } finally {
-      setIsLoading(false);
-    }
-  };
+  // ── Mutations ─────────────────────────────────────────────────────────────
+  const addMutation = useMutation({
+    mutationFn: async ({
+      formData,
+      imageFile,
+    }: {
+      formData: typeof productForm;
+      imageFile: File | null;
+    }) => {
+      let imageUrl: string | null = null;
 
-  const resetForm = () => {
-    setProductForm({
-      name: "",
-      description: "",
-      price: "",
-      stock_quantity: "",
-      category: "",
-      low_stock_threshold: "10",
-      image_url: "",
-    });
-    setImageFile(null);
-    setEditingProductId(null);
-    setFormMode(null);
-    setRemoveImage(false);
-  };
-
-  const openAddForm = () => {
-    resetForm();
-    setFormMode("add");
-  };
-
-  const openEditForm = (product: Product) => {
-    setEditingProductId(product.id);
-    setProductForm({
-      name: product.name,
-      description: product.description || "",
-      price: product.price.toString(),
-      stock_quantity: product.stock_quantity.toString(),
-      category: product.category || "",
-      low_stock_threshold: product.low_stock_threshold.toString(),
-      image_url: product.image_url || "",
-    });
-    setImageFile(null);
-    setRemoveImage(false);
-    setFormMode("edit");
-  };
-
-  const getStoragePathFromUrl = (url: string): string | null => {
-    if (!url) return null;
-    try {
-      const urlObj = new URL(url);
-      const pathParts = urlObj.pathname.split("/");
-      const bucketIndex = pathParts.indexOf("product-images");
-      if (bucketIndex !== -1 && pathParts[bucketIndex + 1])
-        return pathParts.slice(bucketIndex + 1).join("/");
-      return null;
-    } catch {
-      return null;
-    }
-  };
-
-  const handleAddProduct = async (e: React.FormEvent) => {
-    e.preventDefault();
-    let imageUrl: string | null = null;
-    try {
       if (imageFile) {
         const fileName = `${Date.now()}-${imageFile.name}`;
         const { error } = await supabase.storage
           .from("product-images")
           .upload(fileName, imageFile);
-        if (error) {
-          console.error("Upload error:", error);
-          return;
-        }
+        if (error) throw new Error("Image upload failed.");
         const { data: publicUrlData } = supabase.storage
           .from("product-images")
           .getPublicUrl(fileName);
         imageUrl = publicUrlData.publicUrl;
       }
-      const response = await fetch("/api/products", {
+
+      const res = await fetch("/api/products", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          name: productForm.name,
-          description: productForm.description || null,
-          category: productForm.category || null,
-          price: parseFloat(productForm.price),
-          stock_quantity: parseInt(productForm.stock_quantity),
-          low_stock_threshold: parseInt(productForm.low_stock_threshold),
+          name: formData.name,
+          description: formData.description || null,
+          category: formData.category || null,
+          price: parseFloat(formData.price),
+          stock_quantity: parseInt(formData.stock_quantity),
+          low_stock_threshold: parseInt(formData.low_stock_threshold),
           image_url: imageUrl,
         }),
       });
-      if (response.ok) {
-        const product = await response.json();
-        setProducts([product, ...products]);
-        resetForm();
+      if (!res.ok) {
+        const err = await res.json();
+        throw new Error(err.error || "Failed to add product.");
       }
-    } catch (error) {
-      console.error("Failed to add product:", error);
-    }
-  };
+      return res.json() as Promise<Product>;
+    },
+    onSuccess: (newProduct) => {
+      queryClient.setQueryData<Product[]>(queryKeys.products, (old = []) => [
+        newProduct,
+        ...old,
+      ]);
+      resetForm();
+      toast.success("Product added successfully!");
+    },
+    onError: (err) => {
+      console.error("Add product failed:", err);
+      toast.error(
+        err instanceof Error ? err.message : "Failed to add product.",
+      );
+    },
+  });
 
-  const handleUpdateProduct = async (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!editingProductId) return;
-    try {
-      let newImageUrl: string | null = productForm.image_url || null;
-      const oldImageUrl = productForm.image_url;
+  const updateMutation = useMutation({
+    mutationFn: async ({
+      id,
+      formData,
+      imageFile,
+      removeImage,
+      oldImageUrl,
+    }: {
+      id: string;
+      formData: typeof productForm;
+      imageFile: File | null;
+      removeImage: boolean;
+      oldImageUrl: string;
+    }) => {
       const BUCKET = "product-images";
+      let newImageUrl: string | null = oldImageUrl || null;
+
       if (imageFile) {
         if (oldImageUrl) {
           const oldPath = getStoragePathFromUrl(oldImageUrl);
@@ -254,51 +256,141 @@ export default function ProductsPage() {
         if (oldPath) await supabase.storage.from(BUCKET).remove([oldPath]);
         newImageUrl = null;
       }
-      const response = await fetch(`/api/products/${editingProductId}`, {
+
+      const res = await fetch(`/api/products/${id}`, {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          name: productForm.name,
-          description: productForm.description || null,
-          price: Number(productForm.price) || 0,
-          stock_quantity: Number(productForm.stock_quantity) || 0,
-          category: productForm.category || null,
-          low_stock_threshold: Number(productForm.low_stock_threshold) || 0,
+          name: formData.name,
+          description: formData.description || null,
+          price: Number(formData.price) || 0,
+          stock_quantity: Number(formData.stock_quantity) || 0,
+          category: formData.category || null,
+          low_stock_threshold: Number(formData.low_stock_threshold) || 0,
           image_url: newImageUrl,
         }),
       });
-      if (!response.ok) {
-        const errorData = await response.json();
-        throw new Error(errorData.error || "Failed to update product");
+      if (!res.ok) {
+        const err = await res.json();
+        throw new Error(err.error || "Failed to update product.");
       }
-      const updatedProduct = await response.json();
-      setProducts((prev) =>
-        prev.map((p) => (p.id === editingProductId ? updatedProduct : p)),
+      return res.json() as Promise<Product>;
+    },
+    onSuccess: (updatedProduct) => {
+      queryClient.setQueryData<Product[]>(queryKeys.products, (old = []) =>
+        old.map((p) => (p.id === updatedProduct.id ? updatedProduct : p)),
       );
       resetForm();
-    } catch (error) {
-      console.error("Update product failed:", error);
-      alert(
-        error instanceof Error ? error.message : "Failed to update product",
+      toast.success("Product updated successfully!");
+    },
+    onError: (err) => {
+      console.error("Update product failed:", err);
+      toast.error(
+        err instanceof Error ? err.message : "Failed to update product.",
       );
-    }
-  };
+    },
+  });
 
-  const handleDeleteProduct = async (productId: string) => {
-    if (!confirm("Are you sure you want to delete this product?")) return;
-    try {
-      const product = products.find((p) => p.id === productId);
-      if (product?.image_url) {
+  const deleteMutation = useMutation({
+    mutationFn: async (product: Product) => {
+      if (product.image_url) {
         const path = getStoragePathFromUrl(product.image_url);
         if (path) await supabase.storage.from("product-images").remove([path]);
       }
-      const response = await fetch(`/api/products/${productId}`, {
+      const res = await fetch(`/api/products/${product.id}`, {
         method: "DELETE",
       });
-      if (response.ok) setProducts(products.filter((p) => p.id !== productId));
-    } catch (error) {
-      console.error("Failed to delete product:", error);
-    }
+      if (!res.ok) {
+        const err = await res.json();
+        throw new Error(err.error || "Failed to delete product.");
+      }
+      return product.id;
+    },
+    onMutate: async (product) => {
+      await queryClient.cancelQueries({ queryKey: queryKeys.products });
+      const previousProducts = queryClient.getQueryData<Product[]>(
+        queryKeys.products,
+      );
+      queryClient.setQueryData<Product[]>(queryKeys.products, (old = []) =>
+        old.filter((p) => p.id !== product.id),
+      );
+      return { previousProducts };
+    },
+    onSuccess: () => {
+      toast.success("Product deleted successfully.");
+    },
+    onError: (err, _product, context) => {
+      if (context?.previousProducts) {
+        queryClient.setQueryData(queryKeys.products, context.previousProducts);
+      }
+      console.error("Delete product failed:", err);
+      toast.error(
+        err instanceof Error ? err.message : "Failed to delete product.",
+      );
+    },
+    onSettled: () => {
+      queryClient.invalidateQueries({ queryKey: queryKeys.products });
+    },
+  });
+
+  // ── Helpers ───────────────────────────────────────────────────────────────
+  const resetForm = () => {
+    setProductForm({
+      name: "",
+      description: "",
+      price: "",
+      stock_quantity: "",
+      category: "",
+      low_stock_threshold: "10",
+      image_url: "",
+    });
+    setImageFile(null);
+    setEditingProduct(null);
+    setFormMode(null);
+    setRemoveImage(false);
+  };
+
+  const openAddForm = () => {
+    resetForm();
+    setFormMode("add");
+  };
+
+  const openEditForm = (product: Product) => {
+    setEditingProduct(product);
+    setProductForm({
+      name: product.name,
+      description: product.description || "",
+      price: product.price.toString(),
+      stock_quantity: product.stock_quantity.toString(),
+      category: product.category || "",
+      low_stock_threshold: product.low_stock_threshold.toString(),
+      image_url: product.image_url || "",
+    });
+    setImageFile(null);
+    setRemoveImage(false);
+    setFormMode("edit");
+  };
+
+  const handleAddProduct = (e: React.FormEvent) => {
+    e.preventDefault();
+    addMutation.mutate({ formData: productForm, imageFile });
+  };
+
+  const handleUpdateProduct = (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!editingProduct) return;
+    updateMutation.mutate({
+      id: editingProduct.id,
+      formData: productForm,
+      imageFile,
+      removeImage,
+      oldImageUrl: editingProduct.image_url || "",
+    });
+  };
+
+  const handleDeleteProduct = (product: Product) => {
+    if (!confirm("Are you sure you want to delete this product?")) return;
+    deleteMutation.mutate(product);
   };
 
   const handleRemoveImageClick = () => {
@@ -306,6 +398,7 @@ export default function ProductsPage() {
     setImageFile(null);
     setProductForm((prev) => ({ ...prev, image_url: "" }));
   };
+
   const handleImageChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     if (e.target.files?.[0]) {
       setImageFile(e.target.files[0]);
@@ -317,6 +410,7 @@ export default function ProductsPage() {
     formMode === "edit" && productForm.image_url && !removeImage && !imageFile;
   const handleSubmit =
     formMode === "add" ? handleAddProduct : handleUpdateProduct;
+  const isMutating = addMutation.isPending || updateMutation.isPending;
 
   return (
     <div className="min-h-screen bg-zinc-50/60 px-4 py-8 md:px-8">
@@ -412,6 +506,7 @@ export default function ProductsPage() {
                       }
                       placeholder="e.g. Fresh Tomatoes"
                       required
+                      disabled={isMutating}
                       className="focus-visible:ring-emerald-500"
                     />
                   </div>
@@ -426,6 +521,7 @@ export default function ProductsPage() {
                         })
                       }
                       placeholder="e.g. Vegetables"
+                      disabled={isMutating}
                       className="focus-visible:ring-emerald-500"
                     />
                   </div>
@@ -444,7 +540,8 @@ export default function ProductsPage() {
                     }
                     placeholder="Short product description..."
                     rows={3}
-                    className="w-full px-3 py-2 text-sm border border-zinc-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-emerald-500 resize-none bg-white text-zinc-900 placeholder:text-zinc-400"
+                    disabled={isMutating}
+                    className="w-full px-3 py-2 text-sm border border-zinc-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-emerald-500 resize-none bg-white text-zinc-900 placeholder:text-zinc-400 disabled:opacity-60"
                   />
                 </div>
 
@@ -457,7 +554,7 @@ export default function ProductsPage() {
                   </FieldLabel>
                   <label
                     className={`flex flex-col items-center justify-center gap-2 w-full h-28 border-2 border-dashed rounded-xl cursor-pointer transition-colors ${
-                      removeImage
+                      removeImage || isMutating
                         ? "border-zinc-200 bg-zinc-50 opacity-50 cursor-not-allowed"
                         : "border-zinc-300 hover:border-emerald-400 hover:bg-emerald-50/40"
                     }`}
@@ -470,7 +567,7 @@ export default function ProductsPage() {
                       type="file"
                       accept="image/*"
                       onChange={handleImageChange}
-                      disabled={removeImage}
+                      disabled={removeImage || isMutating}
                       className="hidden"
                     />
                   </label>
@@ -497,6 +594,7 @@ export default function ProductsPage() {
                       step="0.01"
                       placeholder="0.00"
                       required
+                      disabled={isMutating}
                       className="focus-visible:ring-emerald-500"
                     />
                   </div>
@@ -513,6 +611,7 @@ export default function ProductsPage() {
                       }
                       placeholder="0"
                       required
+                      disabled={isMutating}
                       className="focus-visible:ring-emerald-500"
                     />
                   </div>
@@ -528,6 +627,7 @@ export default function ProductsPage() {
                         })
                       }
                       placeholder="10"
+                      disabled={isMutating}
                       className="focus-visible:ring-emerald-500"
                     />
                   </div>
@@ -537,15 +637,20 @@ export default function ProductsPage() {
                 <div className="flex gap-3 pt-2">
                   <Button
                     type="submit"
+                    disabled={isMutating}
                     className="bg-emerald-600 hover:bg-emerald-700 text-white font-semibold gap-2 shadow-sm"
                   >
                     {formMode === "add" ? (
                       <>
-                        <Plus className="h-4 w-4" /> Add Product
+                        <Plus className="h-4 w-4" />
+                        {addMutation.isPending ? "Adding..." : "Add Product"}
                       </>
                     ) : (
                       <>
-                        <Edit2 className="h-4 w-4" /> Update Product
+                        <Edit2 className="h-4 w-4" />
+                        {updateMutation.isPending
+                          ? "Saving..."
+                          : "Update Product"}
                       </>
                     )}
                   </Button>
@@ -553,6 +658,7 @@ export default function ProductsPage() {
                     type="button"
                     variant="outline"
                     onClick={resetForm}
+                    disabled={isMutating}
                     className="text-zinc-600"
                   >
                     Cancel
@@ -663,7 +769,11 @@ export default function ProductsPage() {
                     </TableCell>
                     <TableCell>
                       <span
-                        className={`text-sm font-semibold ${product.stock_quantity < product.low_stock_threshold ? "text-red-500" : "text-zinc-700"}`}
+                        className={`text-sm font-semibold ${
+                          product.stock_quantity < product.low_stock_threshold
+                            ? "text-red-500"
+                            : "text-zinc-700"
+                        }`}
                       >
                         {product.stock_quantity}
                       </span>
@@ -677,6 +787,7 @@ export default function ProductsPage() {
                           variant="ghost"
                           size="icon"
                           onClick={() => openEditForm(product)}
+                          disabled={deleteMutation.isPending}
                           className="h-8 w-8 text-blue-500 hover:text-blue-700 hover:bg-blue-50 rounded-lg"
                         >
                           <Edit2 className="h-4 w-4" />
@@ -684,7 +795,8 @@ export default function ProductsPage() {
                         <Button
                           variant="ghost"
                           size="icon"
-                          onClick={() => handleDeleteProduct(product.id)}
+                          onClick={() => handleDeleteProduct(product)}
+                          disabled={deleteMutation.isPending}
                           className="h-8 w-8 text-red-400 hover:text-red-600 hover:bg-red-50 rounded-lg"
                         >
                           <Trash2 className="h-4 w-4" />

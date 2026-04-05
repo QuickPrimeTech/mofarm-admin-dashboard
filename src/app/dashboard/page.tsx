@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useQuery } from "@tanstack/react-query";
 import {
   Card,
   CardContent,
@@ -41,6 +41,18 @@ interface DashboardMetrics {
   orderData: Array<{ date: string; count: number }>;
 }
 
+// ── Query Keys ────────────────────────────────────────────────────────────────
+export const queryKeys = {
+  dashboardMetrics: ["dashboard", "metrics"] as const,
+};
+
+// ── Fetcher ───────────────────────────────────────────────────────────────────
+async function fetchDashboardMetrics(): Promise<DashboardMetrics> {
+  const res = await fetch("/api/dashboard/metrics");
+  if (!res.ok) throw new Error("Failed to load dashboard metrics.");
+  return res.json();
+}
+
 /* ─── Custom Tooltip ─────────────────────────────────────────── */
 const CustomTooltip = ({
   active,
@@ -72,9 +84,9 @@ interface StatCardProps {
   label: string;
   value: string | number;
   icon: React.ReactNode;
-  accentClass: string; // e.g. "bg-emerald-50 text-emerald-600"
-  borderAccent: string; // e.g. "border-l-emerald-500"
-  trend?: number; // optional % change
+  accentClass: string;
+  borderAccent: string;
+  trend?: number;
 }
 
 function StatCard({
@@ -91,29 +103,24 @@ function StatCard({
     <Card
       className={`relative overflow-hidden border-l-4 ${borderAccent} shadow-sm hover:shadow-md transition-shadow duration-200`}
     >
-      {/* subtle background orb */}
       <div
         className={`absolute -right-6 -top-6 h-24 w-24 rounded-full opacity-10 ${accentClass.split(" ")[0]}`}
       />
-
       <CardHeader className="pb-2">
         <CardDescription className="text-xs font-semibold uppercase tracking-widest text-zinc-400">
           {label}
         </CardDescription>
       </CardHeader>
-
       <CardContent className="flex items-end justify-between gap-2">
         <p className="text-3xl font-extrabold tracking-tight text-zinc-900">
           {value}
         </p>
-
         <div className="flex flex-col items-end gap-2">
           <span
             className={`flex h-10 w-10 items-center justify-center rounded-xl ${accentClass}`}
           >
             {icon}
           </span>
-
           {trend !== undefined && (
             <Badge
               variant="secondary"
@@ -164,29 +171,18 @@ function DashboardSkeleton() {
 
 /* ─── Main Page ──────────────────────────────────────────────── */
 export default function DashboardPage() {
-  const [metrics, setMetrics] = useState<DashboardMetrics | null>(null);
-  const [isLoading, setIsLoading] = useState(true);
-
-  useEffect(() => {
-    const fetchMetrics = async () => {
-      try {
-        const response = await fetch("/api/dashboard/metrics");
-        if (response.ok) {
-          const data = await response.json();
-          setMetrics(data);
-        }
-      } catch (error) {
-        console.error("Failed to fetch metrics:", error);
-      } finally {
-        setIsLoading(false);
-      }
-    };
-    fetchMetrics();
-  }, []);
+  const {
+    data: metrics,
+    isLoading,
+    isError,
+  } = useQuery({
+    queryKey: queryKeys.dashboardMetrics,
+    queryFn: fetchDashboardMetrics,
+  });
 
   if (isLoading) return <DashboardSkeleton />;
 
-  if (!metrics) {
+  if (isError || !metrics) {
     return (
       <div className="flex flex-col items-center justify-center py-24 text-center gap-3">
         <AlertCircle className="h-10 w-10 text-red-400" />

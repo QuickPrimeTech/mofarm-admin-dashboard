@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
+import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import {
@@ -46,6 +47,46 @@ interface Order {
   items: OrderItem[];
   created_at: string;
   updated_at: string;
+}
+
+// ── Query Keys ────────────────────────────────────────────────────────────────
+export const queryKeys = {
+  orders: ["orders"] as const,
+  products: ["products"] as const,
+};
+
+// ── Fetchers ──────────────────────────────────────────────────────────────────
+async function fetchOrders(): Promise<Order[]> {
+  const res = await fetch("/api/orders");
+  if (!res.ok) throw new Error("Failed to load orders.");
+  const data = await res.json();
+  return data.orders ?? [];
+}
+
+async function fetchProducts(): Promise<Map<string, Product>> {
+  const res = await fetch("/api/products");
+  if (!res.ok) throw new Error("Failed to load products.");
+  const data = await res.json();
+  const map = new Map<string, Product>();
+  (data.products ?? []).forEach((p: Product) => map.set(p.id, p));
+  return map;
+}
+
+async function updateOrder(id: string, values: Partial<Order>): Promise<Order> {
+  const res = await fetch(`/api/orders/${id}`, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(values),
+  });
+  const data = await res.json();
+  if (!res.ok) throw new Error(data.error || "Failed to update order.");
+  return data;
+}
+
+async function deleteOrder(id: string): Promise<void> {
+  const res = await fetch(`/api/orders/${id}`, { method: "DELETE" });
+  const data = await res.json();
+  if (!res.ok) throw new Error(data.error || "Failed to delete order.");
 }
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
@@ -200,7 +241,7 @@ function EditOrderModal({
 }: {
   order: Order;
   onClose: () => void;
-  onSave: (id: string, values: Partial<Order>) => Promise<void>;
+  onSave: (id: string, values: Partial<Order>) => void;
 }) {
   const [values, setValues] = useState({
     name: order.name,
@@ -210,7 +251,6 @@ function EditOrderModal({
     payment_status: order.payment_status,
     delivery_date: order.delivery_date ? order.delivery_date.slice(0, 10) : "",
   });
-  const [isSaving, setIsSaving] = useState(false);
 
   useEffect(() => {
     const handleKey = (e: KeyboardEvent) => {
@@ -220,17 +260,15 @@ function EditOrderModal({
     return () => window.removeEventListener("keydown", handleKey);
   }, [onClose]);
 
-  const handleSubmit = async (e: React.FormEvent) => {
+  const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
-    setIsSaving(true);
-    await onSave(order.id, {
+    onSave(order.id, {
       ...values,
       phone: values.phone || null,
       delivery_date: values.delivery_date
         ? new Date(values.delivery_date).toISOString()
         : null,
     });
-    setIsSaving(false);
   };
 
   return (
@@ -272,7 +310,6 @@ function EditOrderModal({
             <Input
               value={values.name}
               onChange={(e) => setValues({ ...values, name: e.target.value })}
-              disabled={isSaving}
               required
             />
           </div>
@@ -284,7 +321,6 @@ function EditOrderModal({
               type="email"
               value={values.email}
               onChange={(e) => setValues({ ...values, email: e.target.value })}
-              disabled={isSaving}
               required
             />
           </div>
@@ -295,7 +331,6 @@ function EditOrderModal({
             <Input
               value={values.phone}
               onChange={(e) => setValues({ ...values, phone: e.target.value })}
-              disabled={isSaving}
               placeholder="Optional"
             />
           </div>
@@ -312,7 +347,6 @@ function EditOrderModal({
                 })
               }
               className="w-full px-3 py-2 border border-gray-300 rounded-lg bg-white focus:ring-2 focus:ring-blue-500 outline-none text-sm"
-              disabled={isSaving}
             >
               <option value="pending">Pending</option>
               <option value="dispatched">Dispatched</option>
@@ -332,7 +366,6 @@ function EditOrderModal({
                 })
               }
               className="w-full px-3 py-2 border border-gray-300 rounded-lg bg-white focus:ring-2 focus:ring-blue-500 outline-none text-sm"
-              disabled={isSaving}
             >
               <option value="pending">Pending</option>
               <option value="completed">Completed</option>
@@ -349,7 +382,6 @@ function EditOrderModal({
               onChange={(e) =>
                 setValues({ ...values, delivery_date: e.target.value })
               }
-              disabled={isSaving}
             />
           </div>
           <div className="flex gap-3 pt-2">
@@ -358,23 +390,14 @@ function EditOrderModal({
               variant="outline"
               onClick={onClose}
               className="flex-1 h-11"
-              disabled={isSaving}
             >
               Cancel
             </Button>
             <Button
               type="submit"
               className="flex-1 h-11 bg-blue-600 hover:bg-blue-700"
-              disabled={isSaving}
             >
-              {isSaving ? (
-                <>
-                  <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-                  Saving...
-                </>
-              ) : (
-                "Save Changes"
-              )}
+              Save Changes
             </Button>
           </div>
         </form>
@@ -385,81 +408,115 @@ function EditOrderModal({
 
 // ── Main Page ─────────────────────────────────────────────────────────────────
 export default function OrdersPage() {
-  const [orders, setOrders] = useState<Order[]>([]);
-  const [productMap, setProductMap] = useState<Map<string, Product>>(new Map());
-  const [isLoading, setIsLoading] = useState(true);
+  const queryClient = useQueryClient();
   const [viewingOrder, setViewingOrder] = useState<Order | null>(null);
   const [editingOrder, setEditingOrder] = useState<Order | null>(null);
 
+  // ── Queries ──────────────────────────────────────────────────────────────
+  const {
+    data: orders = [],
+    isLoading: ordersLoading,
+    isError: ordersError,
+  } = useQuery({
+    queryKey: queryKeys.orders,
+    queryFn: fetchOrders,
+  });
+
+  const { data: productMap = new Map(), isError: productsError } = useQuery({
+    queryKey: queryKeys.products,
+    queryFn: fetchProducts,
+  });
+
+  // Show a single error toast if any query fails (only once per error)
   useEffect(() => {
-    fetchData();
-  }, []);
+    if (ordersError) toast.error("Failed to load orders.");
+  }, [ordersError]);
 
-  const fetchData = async () => {
-    try {
-      const [ordersRes, productsRes] = await Promise.all([
-        fetch("/api/orders"),
-        fetch("/api/products"),
-      ]);
+  useEffect(() => {
+    if (productsError) toast.error("Failed to load products.");
+  }, [productsError]);
 
-      if (ordersRes.ok) {
-        const data = await ordersRes.json();
-        setOrders(data.orders ?? []);
-      } else {
-        toast.error("Failed to load orders.");
+  // ── Mutations ────────────────────────────────────────────────────────────
+  const updateMutation = useMutation({
+    mutationFn: ({ id, values }: { id: string; values: Partial<Order> }) =>
+      updateOrder(id, values),
+    onMutate: async ({ id, values }) => {
+      // Cancel any in-flight refetches to avoid overwriting optimistic update
+      await queryClient.cancelQueries({ queryKey: queryKeys.orders });
+
+      // Snapshot previous value for rollback
+      const previousOrders = queryClient.getQueryData<Order[]>(
+        queryKeys.orders,
+      );
+
+      // Optimistically update the cache
+      queryClient.setQueryData<Order[]>(queryKeys.orders, (old = []) =>
+        old.map((o) => (o.id === id ? { ...o, ...values } : o)),
+      );
+
+      return { previousOrders };
+    },
+    onError: (err, _vars, context) => {
+      // Roll back on error
+      if (context?.previousOrders) {
+        queryClient.setQueryData(queryKeys.orders, context.previousOrders);
       }
-
-      if (productsRes.ok) {
-        const data = await productsRes.json();
-        const map = new Map<string, Product>();
-        (data.products ?? []).forEach((p: Product) => map.set(p.id, p));
-        setProductMap(map);
-      }
-    } catch (error) {
-      console.error("Failed to fetch data:", error);
-      toast.error("Failed to load data. Please refresh.");
-    } finally {
-      setIsLoading(false);
-    }
-  };
-
-  const handleSave = async (id: string, values: Partial<Order>) => {
-    try {
-      const response = await fetch(`/api/orders/${id}`, {
-        method: "PATCH",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(values),
-      });
-      const data = await response.json();
-      if (!response.ok) {
-        toast.error(data.error || "Failed to update order.");
-        return;
-      }
-      setOrders(orders.map((o) => (o.id === id ? { ...o, ...values } : o)));
+      toast.error(
+        err instanceof Error ? err.message : "Failed to update order.",
+      );
+    },
+    onSuccess: () => {
       setEditingOrder(null);
       toast.success("Order updated successfully!");
-    } catch (error) {
-      console.error("Failed to update order:", error);
-      toast.error("Something went wrong. Please try again.");
-    }
+    },
+    onSettled: () => {
+      // Always re-sync with server after mutation
+      queryClient.invalidateQueries({ queryKey: queryKeys.orders });
+    },
+  });
+
+  const deleteMutation = useMutation({
+    mutationFn: deleteOrder,
+    onMutate: async (id) => {
+      await queryClient.cancelQueries({ queryKey: queryKeys.orders });
+
+      const previousOrders = queryClient.getQueryData<Order[]>(
+        queryKeys.orders,
+      );
+
+      queryClient.setQueryData<Order[]>(queryKeys.orders, (old = []) =>
+        old.filter((o) => o.id !== id),
+      );
+
+      return { previousOrders };
+    },
+    onError: (err, _id, context) => {
+      if (context?.previousOrders) {
+        queryClient.setQueryData(queryKeys.orders, context.previousOrders);
+      }
+      toast.error(
+        err instanceof Error ? err.message : "Failed to delete order.",
+      );
+    },
+    onSuccess: () => {
+      toast.success("Order deleted successfully.");
+    },
+    onSettled: () => {
+      queryClient.invalidateQueries({ queryKey: queryKeys.orders });
+    },
+  });
+
+  // ── Handlers ─────────────────────────────────────────────────────────────
+  const handleSave = (id: string, values: Partial<Order>) => {
+    updateMutation.mutate({ id, values });
   };
 
-  const handleDelete = async (id: string) => {
+  const handleDelete = (id: string) => {
     if (!confirm("Are you sure you want to delete this order?")) return;
-    try {
-      const response = await fetch(`/api/orders/${id}`, { method: "DELETE" });
-      const data = await response.json();
-      if (!response.ok) {
-        toast.error(data.error || "Failed to delete order.");
-        return;
-      }
-      setOrders(orders.filter((o) => o.id !== id));
-      toast.success("Order deleted successfully.");
-    } catch (error) {
-      console.error("Failed to delete order:", error);
-      toast.error("Something went wrong. Please try again.");
-    }
+    deleteMutation.mutate(id);
   };
+
+  const isLoading = ordersLoading;
 
   return (
     <div className="space-y-6">
@@ -579,6 +636,7 @@ export default function OrdersPage() {
                           variant="ghost"
                           size="sm"
                           onClick={() => handleDelete(order.id)}
+                          disabled={deleteMutation.isPending}
                           className="text-red-600 hover:text-red-700 hover:bg-red-50"
                           title="Delete order"
                         >
