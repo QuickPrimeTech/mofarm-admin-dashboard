@@ -43,7 +43,7 @@ interface Transaction {
   id: string;
   order_id: string;
   amount: number;
-  payment_method: string;
+  payment_method?: string | null;
   status: string;
   mpesa_request_id?: string;
   created_at: string;
@@ -111,7 +111,6 @@ function StatCard({
           <div className={`p-2.5 rounded-xl ${accent}`}>{icon}</div>
         </div>
       </CardContent>
-      {/* Subtle accent line at bottom */}
       <div
         className={`absolute bottom-0 left-0 right-0 h-0.5 ${accent.replace("bg-", "bg-").replace("/10", "")}`}
       />
@@ -225,7 +224,6 @@ export default function TransactionsPage() {
             </p>
           </div>
 
-          {/* Filter */}
           <Select value={filterStatus} onValueChange={setFilterStatus}>
             <SelectTrigger className="w-44 h-9 text-sm">
               <SelectValue placeholder="Filter by status" />
@@ -363,14 +361,14 @@ export default function TransactionsPage() {
                           <Tooltip>
                             <TooltipTrigger asChild>
                               <span className="font-mono text-sm text-gray-700 cursor-default">
-                                #{transaction.order_id.slice(0, 8)}
+                                #{(transaction.order_id ?? "—").slice(0, 8)}
                               </span>
                             </TooltipTrigger>
                             <TooltipContent
                               side="top"
                               className="font-mono text-xs"
                             >
-                              {transaction.order_id}
+                              {transaction.order_id ?? "No order ID"}
                             </TooltipContent>
                           </Tooltip>
                         </TableCell>
@@ -382,18 +380,19 @@ export default function TransactionsPage() {
                           </span>
                         </TableCell>
 
-                        {/* Method */}
+                        {/* Method — safe fallback */}
                         <TableCell className="px-6 py-4">
                           <Badge
                             variant="outline"
                             className="text-xs font-medium bg-gray-50 text-gray-600 border-gray-200"
                           >
-                            {transaction.payment_method?.toUpperCase() ??
-                              "Unknown"}
+                            {(
+                              transaction.payment_method ?? "N/A"
+                            ).toUpperCase()}
                           </Badge>
                         </TableCell>
 
-                        {/* Status — shadcn Select */}
+                        {/* Status */}
                         <TableCell className="px-6 py-4">
                           {isUpdating ? (
                             <Loader2
@@ -402,7 +401,7 @@ export default function TransactionsPage() {
                             />
                           ) : (
                             <Select
-                              value={transaction.status}
+                              value={transaction.status ?? "pending"}
                               onValueChange={(val) =>
                                 handleStatusChange(transaction.id, val)
                               }
@@ -428,14 +427,15 @@ export default function TransactionsPage() {
 
                         {/* Date */}
                         <TableCell className="px-6 py-4 text-sm text-gray-500">
-                          {new Date(transaction.created_at).toLocaleDateString(
-                            "en-KE",
-                            {
-                              day: "numeric",
-                              month: "short",
-                              year: "numeric",
-                            },
-                          )}
+                          {transaction.created_at
+                            ? new Date(
+                                transaction.created_at,
+                              ).toLocaleDateString("en-KE", {
+                                day: "numeric",
+                                month: "short",
+                                year: "numeric",
+                              })
+                            : "—"}
                         </TableCell>
 
                         {/* Actions */}
