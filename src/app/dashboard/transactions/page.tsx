@@ -388,7 +388,8 @@ export default function TransactionsPage() {
                             variant="outline"
                             className="text-xs font-medium bg-gray-50 text-gray-600 border-gray-200"
                           >
-                            {transaction.payment_method.toUpperCase()}
+                            {transaction.payment_method?.toUpperCase() ??
+                              "Unknown"}
                           </Badge>
                         </TableCell>
 
