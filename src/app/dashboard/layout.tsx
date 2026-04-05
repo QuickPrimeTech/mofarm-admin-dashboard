@@ -5,7 +5,7 @@ import { AppSidebar } from "@/components/dashboard/app-sidebar";
 
 export const metadata: Metadata = {
   title: "Dashboard",
-  description: "Farm Admin Dashboard",
+  description: "Mofarm Admin Dashboard",
 };
 
 export default function DashboardLayout({

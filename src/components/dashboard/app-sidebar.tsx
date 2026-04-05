@@ -38,7 +38,7 @@ export function AppSidebar() {
     <Sidebar className="border-r">
       {/* Header */}
       <SidebarHeader className="px-6 py-4">
-        <h1 className="text-xl font-bold">Farm Admin</h1>
+        <h1 className="text-xl font-bold">Mofarm Smart Farming Admin</h1>
         <p className="text-sm text-muted-foreground">Dashboard</p>
       </SidebarHeader>
 
