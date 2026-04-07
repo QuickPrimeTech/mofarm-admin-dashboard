@@ -1,8 +1,7 @@
 // app/api/offers/[id]/route.ts
 import { NextRequest, NextResponse } from "next/server";
 import { createClient } from "@/lib/supabase/server";
-
-
+import { revalidatePage } from "@/lib/revalidate";
 
 // Allowed fields that can be updated (security whitelist)
 const ALLOWED_UPDATE_FIELDS = [
@@ -121,6 +120,8 @@ export async function PATCH(
       throw error;
     }
 
+    await revalidatePage("/");
+
     return NextResponse.json(updatedOffer, { status: 200 });
   } catch (error) {
     console.error("API Error - Updating offer:", error);
@@ -156,6 +157,8 @@ export async function DELETE(
       .eq("id", id);
 
     if (error) throw error;
+
+    await revalidatePage("/");
 
     return NextResponse.json(
       { success: true, message: "Offer deleted" },

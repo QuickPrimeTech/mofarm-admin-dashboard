@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { createClient } from "@/lib/supabase/server";
+import { revalidatePage } from "@/lib/revalidate";
 
 export async function GET() {
   try {
@@ -69,6 +70,8 @@ export async function POST(request: NextRequest) {
       .single();
 
     if (error) throw error;
+
+    await revalidatePage("/");
 
     return NextResponse.json(offer, { status: 201 });
   } catch (error) {

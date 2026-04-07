@@ -1,6 +1,7 @@
 // app/api/products/[id]/route.ts
 import { NextRequest, NextResponse } from "next/server";
 import { createClient } from "@/lib/supabase/server";
+import { revalidatePage } from "@/lib/revalidate";
 
 export async function GET(
   request: NextRequest,
@@ -64,6 +65,8 @@ export async function PATCH(
       return NextResponse.json({ error: error.message }, { status: 500 });
     }
 
+    await revalidatePage("/");
+
     return NextResponse.json(data);
   } catch (error) {
     console.error("Failed to update product:", error);
@@ -99,6 +102,8 @@ export async function DELETE(
 
     const { error } = await supabase.from("products").delete().eq("id", id);
     if (error) throw error;
+
+    await revalidatePage("/");
 
     return NextResponse.json({ success: true });
   } catch (error) {
